@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+#Define parameters
+Parameters:
+  EmbeddingModel:
+    Type: String
+    Default: "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
+    Description: "ARN of the embedding model to use. Defaults to Titan 2."
+
+  KnowledgeBaseName:
+    Type: String
+    Default: "knowledge-base"
+    Description: "Name of the knowledge base."
+
+  PineconeConnectionString:
+    Type: String
+    Description: "Pinecone connection string (e.g., 'https://your-pinecone-endpoint-url')."
+    Default: "https://xxx.xxx.xxx.pinecone.io"
+
+  PineconeApiKey:
+    Type: String
+    Description: "Pinecone API Key for authentication."
+    Default: "{\"apiKey\": \"xxxx_xxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}"
+
+  TextField:
+    Type: String
+    Default: "text"
+    Description: "Field name in Pinecone to store raw text data."
+
+  MetadataField:
+    Type: String
+    Default: "metadata"
+    Description: "Field name in Pinecone to store metadata associated with the text."
+
+Resources:
+  # S3 bucket for storing knowledge base data
+  KnowledgeBaseS3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Sub "${KnowledgeBaseName}-bucket"
+
+  # IAM Role for Amazon Bedrock 
+  BedrockIAMRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "bedrock.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "BedrockAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:ListBucket"
+                Resource: !Sub "arn:aws:s3:::${KnowledgeBaseS3Bucket}"
+              - Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                Resource: !Sub "arn:aws:s3:::${KnowledgeBaseName}-bucket/*"
+
+              - Effect: "Allow"
+                Action:
+                  - "secretsmanager:GetSecretValue"
+                Resource: "*"  # Adjust to the specific ARN of your Pinecone API key secret
+
+              # Add Bedrock permissions to invoke the Amazon Titan embedding model
+              - Effect: "Allow"
+                Action:
+                  - "bedrock:InvokeModel"
+                Resource: "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
+
+  # Pinecone API Key stored as plain text in AWS Secrets Manager
+  PineconeApiKeySecret:
+    Type: "AWS::SecretsManager::Secret"
+    Properties:
+      Name: !Sub "${KnowledgeBaseName}-PineconeApiKey"
+      Description: "Pinecone API Key for ${KnowledgeBaseName}"
+      SecretString: !Ref PineconeApiKey  # Store the API key as plain text
+
+  # Amazon Bedrock Knowledge Base with Pinecone integration
+  KnowledgeBase:
+    Type: "AWS::Bedrock::KnowledgeBase"
+    Properties:
+      Name: !Ref KnowledgeBaseName
+      Description: "Knowledge base integrating Amazon Bedrock with Pinecone"
+      RoleArn: !GetAtt BedrockIAMRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: "VECTOR"
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: !Ref EmbeddingModel
+      StorageConfiguration:
+        Type: "PINECONE"
+        PineconeConfiguration:
+          ConnectionString: !Ref PineconeConnectionString
+          CredentialsSecretArn: !Ref PineconeApiKeySecret
+          FieldMapping:
+            TextField: !Ref TextField
+            MetadataField: !Ref MetadataField
+          Namespace: !Sub "${KnowledgeBaseName}-namespace"
+
+  # Define the KB Data Source
+  KnowledgeBaseDataSource:
+    Type: "AWS::Bedrock::DataSource"
+    Properties:
+      KnowledgeBaseId: !Ref KnowledgeBase
+      Name: "S3DataSource"
+      Description: "S3 Data Source for Knowledge Base"
+      DataSourceConfiguration:
+        Type: "S3"
+        S3Configuration:
+          BucketArn: !Sub "arn:aws:s3:::${KnowledgeBaseS3Bucket}"
+
+
